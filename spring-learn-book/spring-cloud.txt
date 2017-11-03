@@ -1,0 +1,279 @@
+
+一服务注册与发现
+服务端：
+pom文件引入
+<dependency>		    
+	<groupId>org.springframework.cloud</groupId>			
+	<artifactId>spring-cloud-starter-eureka-server</artifactId>
+</dependency>
+启动器：
+
+/**
+ * 
+ * @EnableEurekaServer 服务注册服务端
+ * @SpringBootApplication spring boot启动器
+ * @author Administrator
+ *
+ */
+@EnableEurekaServer
+@SpringBootApplication
+public class EurekaServerApplication {
+	public static void main(String[] args) {
+		SpringApplication.run(EurekaServerApplication.class, args);
+	}
+}
+
+配置文件，application.yml
+
+server:
+  port: 8761
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    registerWithEureka: false //表明是服务端
+    fetchRegistry: false
+    serviceUrl:
+      defaultZone: http://${eureka.instance.hostname}:${server.port}/eureka/
+
+
+工程启动之后可以通过http://localhost:8761/,查看客户端注册情况
+
+客户端：
+引入
+<dependency>   
+	<groupId>org.springframework.cloud</groupId>
+	<artifactId>spring-cloud-starter-eureka</artifactId>
+</dependency>
+
+
+/**
+ * @EnableEurekaClient 自动注册客户端注解
+ * @RestController spring boot 控制器
+ * @author Administrator
+ *
+ */
+@SpringBootApplication
+@EnableEurekaClient
+@RestController
+public class ServiceHiApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(ServiceHiApplication.class, args);
+	}
+
+	@Value("${server.port}")
+	String port;
+	@RequestMapping("/hi")
+	public String home(@RequestParam String name) {
+		return "hi "+name+",i am from port:" +port;
+	}
+
+}
+
+
+配置文件bootstrap.yml
+eureka:
+  client:
+    serviceUrl:
+      defaultZone: http://localhost:8761/eureka/
+server:
+  port: 8763
+spring:
+  application:
+    name: service-hi
+
+客户端启动之后，服务会自动注册到服务中心
+
+
+
+二，服务之间的请求交互
+Spring cloud有两种服务调用方式，一种是ribbon+restTemplate，另一种是feign
+先说ribbon+restTemplate的方式，pom文件引入
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-eureka</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-ribbon</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+
+@SpringBootApplication
+@EnableDiscoveryClient
+public class ServiceRibbonApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(ServiceRibbonApplication.class, args);
+	}
+
+	@Bean
+	@LoadBalanced
+	RestTemplate restTemplate() {
+		return new RestTemplate();
+	}
+
+}
+
+@EnableDiscoveryClient向服务中心注册；并且向程序的ioc注入一个bean:
+restTemplate;并通过@LoadBalanced注解表明这个restRemplate开启负载均衡的功能
+
+服务调用
+@Service
+public class HelloService {
+    @Autowired
+    RestTemplate restTemplate;
+
+    public String hiService(String name) {
+        return restTemplate.getForObject("http://SERVICE-HI/hi?name="+name,String.class);
+    }
+}
+
+
+feign方式
+
+pom文件引入
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-eureka</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-feign</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+加上@EnableFeignClients注解开启Feign的功能：
+@SpringBootApplication
+@EnableDiscoveryClient
+@EnableFeignClients
+public class ServiceFeignApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(ServiceFeignApplication.class, args);
+    }
+}
+
+服务调用
+
+@FeignClient(value = "service-hi")
+public interface SchedualServiceHi {
+    @RequestMapping(value = "/hi",method = RequestMethod.GET)
+    String sayHiFromClientOne(@RequestParam(value = "name") String name);
+}
+
+
+三，断路器，
+在微服务架构中，根据业务来拆分成一个个的服务，
+服务与服务之间可以相互调用（RPC），
+在Spring Cloud可以用RestTemplate+Ribbon和Feign来调用。为了保证其高可用，
+单个服务通常会集群部署。由于网络原因或者自身的原因，服务并不能保证100%可用
+，如果单个服务出现问题，调用这个服务就会出现线程阻塞，
+此时若有大量的请求涌入，Servlet容器的线程资源会被消耗完毕，
+导致服务瘫痪。服务与服务之间的依赖性，故障会传播，
+会对整个微服务系统造成灾难性的严重后果，这就是服务故障的“雪崩”效应。
+
+为了解决这个问题，业界提出了断路器模型，当对特定的服务的调用的不可用达到一个阀值，
+断路器就会被打开，访问到这个服务的时候就会立马返回异常
+
+
+在ribbon中使用断路器
+pom文件引入
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-hystrix</artifactId>
+</dependency>
+
+
+@SpringBootApplication
+@EnableDiscoveryClient
+@EnableHystrix  //断路器注解
+public class ServiceRibbonApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ServiceRibbonApplication.class, args);
+    }
+
+    @Bean
+    @LoadBalanced
+    RestTemplate restTemplate() {
+        return new RestTemplate();
+    }
+}
+
+
+调用方式
+@Service
+public class HelloService {
+    @Autowired
+    RestTemplate restTemplate;
+
+    @HystrixCommand(fallbackMethod = "hiError")  //该注解对该方法创建了熔断器的功能，并指定了fallbackMethod熔断方法
+    public String hiService(String name) {
+        return restTemplate.getForObject("http://SERVICE-HI/hi?name="+name,String.class);
+    }
+
+    public String hiError(String name) {
+        return "hi,"+name+",sorry,error!";
+    }
+}
+
+
+fegin中使用断路器
+@FeignClient(value = "service-hi",fallback = SchedualServiceHiHystric.class)
+public interface SchedualServiceHi {
+    @RequestMapping(value = "/hi",method = RequestMethod.GET)
+    String sayHiFromClientOne(@RequestParam(value = "name") String name);
+}
+
+
+@Component
+public class SchedualServiceHiHystric implements SchedualServiceHi {
+    @Override
+    public String sayHiFromClientOne(String name) {
+        return "sorry "+name;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
